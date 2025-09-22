@@ -63,7 +63,7 @@ def emergencia(codigo_id):
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor(dictionary=True)
 
-        # Nota: acepta 'QR001' o el id numérico
+        # Acepta 'QR001' o el id numérico
         cursor.execute("""
             SELECT ed.nombre, ed.apellido, ed.telefono_1, ed.telefono_2,
                    ed.factor_sanguineo, ed.tiene_alergias, ed.instructivo_url
@@ -75,7 +75,7 @@ def emergencia(codigo_id):
         data = cursor.fetchone()
         conn.close()
     except Error as e:
-        # Mostrar error legible en lugar de 500
+        # Mostrar error legible en lugar de 500 genérico
         return f"Error de base de datos: {e}", 500
 
     if not data:
@@ -92,4 +92,84 @@ def emergencia(codigo_id):
         <style>
             body { background-color: #f8f9fa; font-family: 'Segoe UI', sans-serif; }
             .container { max-width: 700px; margin-top: 50px; }
-            .card { border-radius: 15px; padding: 30px; box-shadow: 0 0 20px rg
+            .card { border-radius: 15px; padding: 30px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+            .btn-call { font-size: 1.1rem; font-weight: 500; margin-bottom: 10px; width: 100%; }
+            .emergency-box { margin-top: 25px; padding: 20px; background-color: #f1f1f1; border-left: 6px solid #dc3545; border-radius: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card">
+                <h2 class="text-center mb-4">🚨 Datos de Emergencia / Emergency Data</h2>
+                <p class="text-center text-muted">Accedé a la información crítica de forma rápida / Access critical information quickly</p>
+
+                <p><strong>Nombre / Name:</strong> {{ nombre }} {{ apellido }}</p>
+                <p><strong>Grupo sanguíneo / Blood group:</strong> {{ factor_sanguineo }}</p>
+                <p><strong>¿Tiene alergias? / Has allergies?:</strong> {{ "Sí / Yes" if tiene_alergias else "No / No" }}</p>
+
+                <p class="mt-4"><strong>Teléfonos de contacto / Contact phone numbers:</strong></p>
+                <a href="tel:{{ telefono_1 }}" class="btn btn-danger btn-call">📞 Llamar al contacto 1 / Call contact 1</a>
+                <a href="tel:{{ telefono_2 }}" class="btn btn-warning btn-call">📞 Llamar al contacto 2 / Call contact 2</a>
+
+                <hr>
+                <a href="{{ instructivo_url }}" target="_blank" class="btn btn-info btn-call">▶️ Ver instructivo de primeros auxilios / See first aid instructions</a>
+
+                <div class="emergency-box mt-4" id="emergencyNumbers">
+                    <strong>Números de emergencia locales / Local emergency numbers:</strong>
+                    <div id="ubicacion">Cargando ubicación / Loading location...</div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            const emergencyNumbers = {{ emergency_numbers|tojson }};
+
+            function mostrarNumeros(pais, region) {
+                let numeros;
+                try {
+                    const infoPais = emergencyNumbers[pais];
+                    if (region && infoPais[region]) {
+                        numeros = infoPais[region];
+                    } else {
+                        numeros = infoPais.default;
+                    }
+                } catch {
+                    numeros = { "policía":"911", "bomberos":"100", "ambulancia":"107" };
+                }
+
+                let html = `📍 ${region || pais}<br>
+                    Policía / Police: ${numeros.policía} · Bomberos / Fire: ${numeros.bomberos} · Ambulancia / Ambulance: ${numeros.ambulancia}`;
+                document.getElementById("ubicacion").innerHTML = html;
+            }
+
+            function obtenerProvincia(lat, lon) {
+                fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        const pais = data?.address?.country || "Argentina";
+                        const region = data?.address?.state || null;
+                        mostrarNumeros(pais, region);
+                    })
+                    .catch(() => {
+                        document.getElementById("ubicacion").innerText = "No se pudo determinar la ubicación / Could not determine location";
+                    });
+            }
+
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    pos => obtenerProvincia(pos.coords.latitude, pos.coords.longitude),
+                    () => document.getElementById("ubicacion").innerText = "No se pudo acceder a la ubicación del dispositivo / Cannot access device location"
+                );
+            } else {
+                document.getElementById("ubicacion").innerText = "Tu navegador no soporta geolocalización / Your browser does not support geolocation";
+            }
+        </script>
+    </body>
+    </html>
+    '''
+
+    return render_template_string(html_template, **data, emergency_numbers=emergency_numbers)
+
+if __name__ == "__main__":
+    # Para uso local con Flask (dev). En la nube usaremos Gunicorn (o el runner de la plataforma).
+    app.run(debug=True)
