@@ -1,0 +1,27 @@
+{
+  "AR": {
+    "nombre": "Argentina",
+    "default": {"policía": "911", "bomberos": "100", "ambulancia": "107"},
+    "CABA": {"policía": "911", "bomberos": "100", "ambulancia": "107 (SAME)"},
+    "Córdoba": {"policía": "101", "bomberos": "100", "ambulancia": "107"},
+    "Santa Fe": {"policía": "911", "bomberos": "100", "ambulancia": "107 (SIES)"},
+    "Buenos Aires": {"policía": "911", "bomberos": "100", "ambulancia": "107"},
+    "Chubut": {"policía": "101", "bomberos": "100", "ambulancia": "107"},
+    "Salta": {"policía": "101", "bomberos": "100", "ambulancia": "107"},
+    "Santiago del Estero": {"policía": "101", "bomberos": "100", "ambulancia": "107"}
+  },
+  "US": {"nombre": "Estados Unidos", "default": {"general": "911"}},
+  "GB": {"nombre": "Reino Unido", "default": {"general": "999 or 112"}},
+  "CN": {"nombre": "China", "default": {"policía": "110", "bomberos": "119", "ambulancia": "120"}},
+  "FR": {"nombre": "Francia", "default": {"policía": "17", "bomberos": "18", "ambulancia": "15"}},
+  "BR": {"nombre": "Brasil", "default": {"policía": "190", "bomberos": "193", "ambulancia": "192"}},
+  "DE": {"nombre": "Alemania", "default": {"policía": "110", "bomberos_ambulancia": "112"}},
+  "CA": {"nombre": "Canadá", "default": {"general": "911"}},
+  "CL": {"nombre": "Chile", "default": {"policía": "133", "bomberos": "132", "ambulancia": "131"}},
+  "AU": {"nombre": "Australia", "default": {"general": "000"}},
+  "AT": {"nombre": "Austria", "default": {"general": "112"}},
+  "IT": {"nombre": "Italia", "default": {"general": "112"}},
+  "ES": {"nombre": "España", "default": {"general": "112"}},
+  "IN": {"nombre": "India", "default": {"policía": "100", "bomberos": "101", "ambulancia": "102"}},
+  "JP": {"nombre": "Japón", "default": {"policía": "110", "bomberos": "119", "ambulancia": "119"}}
+}

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Datos de Emergencia</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', sans-serif;
+            padding: 20px;
+        }
+        .card {
+            border-radius: 15px;
+            box-shadow: 0 0 12px rgba(0,0,0,0.1);
+        }
+        .titulo {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+        .dato-label {
+            font-weight: 600;
+            color: #6c757d;
+        }
+        .dato-valor {
+            font-size: 1.25rem;
+            color: #212529;
+        }
+        .btn-emergencia {
+            font-size: 1.2rem;
+            padding: 10px 20px;
+            margin: 5px;
+            width: 100%;
+        }
+        .icono-grande {
+            font-size: 1.5rem;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container mt-3">
+    <div class="card p-4">
+        <div class="text-center mb-4">
+            <h1 class="titulo">🚨 Datos de Emergencia</h1>
+            <p class="text-muted">Accedé a la información crítica de forma rápida</p>
+        </div>
+
+        <div class="mb-3">
+            <span class="dato-label">Nombre:</span>
+            <div class="dato-valor">{{ data.nombre }} {{ data.apellido }}</div>
+        </div>
+
+        <div class="mb-3">
+            <span class="dato-label">Grupo sanguíneo:</span>
+            <div class="dato-valor">{{ data.factor_sanguineo }}</div>
+        </div>
+
+        <div class="mb-3">
+            <span class="dato-label">¿Tiene alergias?:</span>
+            <div class="dato-valor {% if data.tiene_alergias %}text-danger{% else %}text-success{% endif %}">
+                {% if data.tiene_alergias %}Sí{% else %}No{% endif %}
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <span class="dato-label">Teléfonos de contacto:</span>
+            <div class="d-grid gap-2">
+                {% if data.telefono_1 %}
+                <a href="tel:{{ data.telefono_1 }}" class="btn btn-danger btn-emergencia">
+                    <i class="bi bi-telephone-fill icono-grande"></i> Llamar al contacto 1
+                </a>
+                {% endif %}
+                {% if data.telefono_2 %}
+                <a href="tel:{{ data.telefono_2 }}" class="btn btn-warning btn-emergencia">
+                    <i class="bi bi-telephone-fill icono-grande"></i> Llamar al contacto 2
+                </a>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if data.instructivo_url %}
+        <hr>
+        <div class="text-center">
+            <a href="{{ data.instructivo_url }}" target="_blank" class="btn btn-info btn-emergencia">
+                <i class="bi bi-play-circle icono-grande"></i> Ver instructivo de primeros auxilios
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+</body>
+</html>
+
