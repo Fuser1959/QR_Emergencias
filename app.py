@@ -1,36 +1,53 @@
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 import mysql.connector
 from mysql.connector import Error
 import json
 import os
+import requests
 
 app = Flask(__name__)
 
-# -------- Config DB por variables de entorno (ideal para nube) --------
+# ---------------- DB (Railway) ----------------
 DB_HOST = os.environ.get("QR_DB_HOST", "localhost")
 DB_USER = os.environ.get("QR_DB_USER", "root")
 DB_PASS = os.environ.get("QR_DB_PASSWORD", "")
 DB_NAME = os.environ.get("QR_DB_NAME", "qr_emergencias")
 
 db_config = {
-    'host': DB_HOST,
-    'user': DB_USER,
-    'password': DB_PASS,
-    'database': DB_NAME,
-    # 'port': int(os.environ.get("QR_DB_PORT", "3306")),  # no necesario en Railway (3306)
+    "host": DB_HOST,
+    "user": DB_USER,
+    "password": DB_PASS,
+    "database": DB_NAME,
 }
 
-# -------- Cargar JSON con teléfonos de emergencia --------
+# ---------------- Nominatim ----------------
+# Sugerido: en Railway → web → Variables, agregar NOMINATIM_EMAIL con tu email real
+NOMINATIM_EMAIL = os.environ.get("NOMINATIM_EMAIL")  # p.ej. "nicolas.gimenez.asta.ng@gmail.com"
+NOMINATIM_BASE = "https://nominatim.openstreetmap.org/reverse"
+
+def _nominatim_headers():
+    # User-Agent recomendado por Nominatim: incluir app e email de contacto si está disponible
+    if NOMINATIM_EMAIL:
+        ua = f"QR-Emergencias/1.0 (contact:{NOMINATIM_EMAIL})"
+    else:
+        ua = "QR-Emergencias/1.0 (no-email-provided)"
+    return {
+        "User-Agent": ua,
+        "Accept": "application/json",
+        # Opcionalmente podrías incluir Referer, pero no es obligatorio.
+    }
+
+# ---------------- Cargar JSON con teléfonos ----------------
 BASE_JSON_PATH = os.path.join(os.path.dirname(__file__), "static", "emergency_numbers_partial_updated.json")
 with open(BASE_JSON_PATH, "r", encoding="utf-8") as f:
     emergency_numbers = json.load(f)
 
-# -------- Healthcheck para despliegue --------
+# ---------------- Healthcheck ----------------
 @app.get("/health")
 def health():
     return {"status": "ok"}, 200
 
-# -------- Ping a la base para diagnóstico --------
+# ---------------- Diagnóstico DB ----------------
 @app.get("/db_ping")
 def db_ping():
     try:
@@ -39,19 +56,54 @@ def db_ping():
         cur.execute("SELECT 1")
         cur.fetchone()
         conn.close()
-        return jsonify({
-            "db_host": DB_HOST,
-            "db_name": DB_NAME,
-            "status": "db_ok"
-        }), 200
+        return jsonify({"db_host": DB_HOST, "db_name": DB_NAME, "status": "db_ok"}), 200
     except Error as e:
-        return jsonify({
-            "db_host": DB_HOST,
-            "db_name": DB_NAME,
-            "status": "db_error",
-            "error": str(e)
-        }), 500
+        return jsonify({"db_host": DB_HOST, "db_name": DB_NAME, "status": "db_error", "error": str(e)}), 500
 
+# ---------------- Proxy a Nominatim ----------------
+@app.get("/geo/reverse")
+def geo_reverse():
+    """
+    Proxy simple: /geo/reverse?lat=...&lon=...
+    Devuelve JSON de Nominatim (format=jsonv2) limitado a los campos útiles.
+    """
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+
+    # Validaciones rápidas
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat/lon inválidos"}), 400
+
+    params = {
+        "format": "jsonv2",
+        "lat": f"{lat_f:.6f}",
+        "lon": f"{lon_f:.6f}",
+        "addressdetails": 1,
+    }
+
+    try:
+        r = requests.get(NOMINATIM_BASE, params=params, headers=_nominatim_headers(), timeout=6)
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+
+        # Extraer solo lo necesario para el front
+        address = data.get("address", {}) if isinstance(data, dict) else {}
+        country = address.get("country")
+        state = address.get("state") or address.get("region")
+
+        return jsonify({
+            "country": country,
+            "state": state,
+            "raw": data  # útil para debug; si no lo querés, podés quitar este campo
+        }), 200
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Nominatim error: {e}"}), 502
+
+# ---------------- App ----------------
 @app.route("/")
 def home():
     return "¡Bienvenido a QR Emergencias / Welcome to Emergency QR!"
@@ -75,7 +127,6 @@ def emergencia(codigo_id):
         data = cursor.fetchone()
         conn.close()
     except Error as e:
-        # Mostrar error legible en lugar de 500 genérico
         return f"Error de base de datos: {e}", 500
 
     if not data:
@@ -86,8 +137,8 @@ def emergencia(codigo_id):
     <html lang="es">
     <head>
         <meta charset="UTF-8">
-        <title>Datos de Emergencia / Emergency Data</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Datos de Emergencia / Emergency Data</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
         <style>
             body { background-color: #f8f9fa; font-family: 'Segoe UI', sans-serif; }
@@ -143,33 +194,35 @@ def emergencia(codigo_id):
             }
 
             function obtenerProvincia(lat, lon) {
-                fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`)
+                // Ahora llamamos al backend propio (mismo dominio) => sin CORS
+                fetch(`/geo/reverse?lat=${lat}&lon=${lon}`)
                     .then(response => response.json())
                     .then(data => {
-                        const pais = data?.address?.country || "Argentina";
-                        const region = data?.address?.state || null;
+                        const pais = data?.country || "Argentina";
+                        const region = data?.state || null;
                         mostrarNumeros(pais, region);
                     })
                     .catch(() => {
-                        document.getElementById("ubicacion").innerText = "No se pudo determinar la ubicación / Could not determine location";
+                        document.getElementById("ubicacion").innerText =
+                          "No se pudo determinar la ubicación / Could not determine location";
                     });
             }
 
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     pos => obtenerProvincia(pos.coords.latitude, pos.coords.longitude),
-                    () => document.getElementById("ubicacion").innerText = "No se pudo acceder a la ubicación del dispositivo / Cannot access device location"
+                    () => document.getElementById("ubicacion").innerText =
+                        "No se pudo acceder a la ubicación del dispositivo / Cannot access device location"
                 );
             } else {
-                document.getElementById("ubicacion").innerText = "Tu navegador no soporta geolocalización / Your browser does not support geolocation";
+                document.getElementById("ubicacion").innerText =
+                    "Tu navegador no soporta geolocalización / Your browser does not support geolocation";
             }
         </script>
     </body>
     </html>
     '''
-
     return render_template_string(html_template, **data, emergency_numbers=emergency_numbers)
 
 if __name__ == "__main__":
-    # Para uso local con Flask (dev). En la nube usaremos Gunicorn (o el runner de la plataforma).
     app.run(debug=True)
