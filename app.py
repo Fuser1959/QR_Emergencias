@@ -18,7 +18,6 @@ DB_PASS = os.environ.get("QR_DB_PASSWORD", "")
 DB_NAME = os.environ.get("QR_DB_NAME", "qr_emergencias")
 
 # Clave de sesión Flask
-# Generá un valor fuerte y cargalo como variable QR_SECRET_KEY en Railway
 app.secret_key = os.environ.get("QR_SECRET_KEY", "dev-please-change-me")
 
 db_config = {
@@ -325,5 +324,4 @@ def emergencia(codigo_id):
 # Main (desarrollo local)
 # =========================
 if __name__ == "__main__":
-    # Para uso local con Flask (dev). En la nube usamos Gunicorn (o el runner de la plataforma).
     app.run(debug=True)
