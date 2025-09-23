@@ -46,7 +46,8 @@ def get_current_user():
         return None
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, email, COALESCE(full_name, CONCAT_WS(' ', nombre, apellido)) AS full_name FROM users WHERE id=%s", (uid,))
+    # 🔧 FIX: no usar columnas que no existen (nombre/apellido)
+    cur.execute("SELECT id, email, COALESCE(full_name, email) AS full_name FROM users WHERE id=%s", (uid,))
     user = cur.fetchone()
     cur.close(); conn.close()
     return user
