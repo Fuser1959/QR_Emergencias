@@ -1,54 +1,55 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Ingresar / Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#f6f7fb; --card:#fff; --text:#222; --muted:#6b7280; --primary:#2563eb; --primary-fg:#fff; --danger:#ef4444; }
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Inter,"Helvetica Neue",Arial,sans-serif;color:var(--text);}
-    .wrap{min-height:100dvh;display:grid;place-items:center;padding:24px}
-    .card{width:100%;max-width:420px;background:var(--card);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.06);padding:28px}
-    h1{font-size:22px;margin:0 0 18px 0;text-align:center}
-    label{font-size:13px;color:var(--muted);display:block;margin:12px 0 6px}
-    input[type="email"],input[type="password"]{
-      width:100%;padding:12px 14px;border:1px solid #e5e7eb;border-radius:10px;font-size:15px;outline:none
-    }
-    input:focus{border-color:#c7d2fe;box-shadow:0 0 0 3px #e0e7ff}
-    .btn{width:100%;margin-top:16px;padding:12px 14px;border-radius:10px;border:0;background:var(--primary);color:var(--primary-fg);font-weight:600;cursor:pointer}
-    .hint{margin-top:14px;text-align:center}
-    .link{color:var(--muted);font-size:14px;text-decoration:none}
-    .err{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:14px}
+    :root{--bg:#f6f7fb;--card:#fff;--txt:#111;--muted:#777;--red:#ef4444;--blue:#2563eb;}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;background:var(--bg);color:var(--txt)}
+    .wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
+    .card{width:100%;max-width:520px;background:var(--card);border-radius:16px;padding:28px 24px;box-shadow:0 10px 40px rgba(0,0,0,.07)}
+    h1{font-size:20px;margin:0 0 8px 0;text-align:center}
+    .muted{color:var(--muted);font-size:14px;text-align:center;margin:0 0 16px}
+    form{display:grid;gap:12px}
+    label{font-weight:600;font-size:14px}
+    input{width:100%;padding:12px 14px;border:1px solid #e5e7eb;border-radius:10px;font-size:15px}
+    .btn{background:var(--blue);color:#fff;border:none;border-radius:10px;padding:12px 16px;font-weight:600;font-size:15px;cursor:pointer}
+    .btn:disabled{opacity:.7}
+    .error{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:10px 12px;border-radius:10px;margin-bottom:6px;font-size:14px}
+    .row{display:flex;justify-content:space-between;align-items:center;margin-top:6px}
+    a{color:var(--blue);text-decoration:none}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>Iniciar sesión</h1>
+<div class="wrap">
+  <div class="card">
+    <h1>Iniciar sesión</h1>
+    <p class="muted">Ingresá con tu email y contraseña.</p>
 
-      {% if error %}
-      <div class="err">{{ error }}</div>
-      {% endif %}
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
 
-      <form method="post" action="/login">
-        <!-- next: si viene en la URL /login?next=... lo pasamos al POST -->
-        <input type="hidden" name="next" value="{{ request.args.get('next','') }}">
-
-        <label for="email">Email</label>
-        <input id="email" name="email" type="email" placeholder="tucuenta@correo.com" required autofocus>
-
-        <label for="password">Contraseña</label>
-        <input id="password" name="password" type="password" placeholder="********" required>
-
-        <button class="btn" type="submit">Entrar</button>
-      </form>
-
-      <div class="hint">
-        <a class="link" href="/">← Volver al inicio</a>
+    <form method="post" action="{{ url_for('login', next=next) }}">
+      <div>
+        <label>Email</label>
+        <input type="email" name="email" autocomplete="username" required>
       </div>
-    </div>
+      <div>
+        <label>Contraseña</label>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn" type="submit">Entrar</button>
+      <div class="row">
+        <div></div>
+        <a href="{{ url_for('forgot') }}">¿Olvidaste tu contraseña?</a>
+      </div>
+    </form>
   </div>
+</div>
 </body>
 </html>
 
