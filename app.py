@@ -1,10 +1,9 @@
 import os
-import re
 from datetime import timedelta
 
 from flask import (
     Flask, request, render_template, redirect, url_for,
-    session, abort, jsonify
+    session, abort, jsonify, g
 )
 import mysql.connector
 from werkzeug.security import check_password_hash
@@ -47,21 +46,28 @@ def get_db():
         autocommit=True
     )
 
-def get_current_user():
-    uid = session.get("uid")
-    if not uid:
-        return None
+def get_user_by_id(uid: int):
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, email, nombre, apellido FROM users WHERE id=%s", (uid,))
+    cur.execute("SELECT * FROM users WHERE id=%s", (uid,))
     user = cur.fetchone()
     cur.close()
     conn.close()
     return user
 
+def get_current_user():
+    uid = session.get("uid")
+    if not uid:
+        return None
+    return get_user_by_id(uid)
+
 def _is_safe_next(nxt: str) -> bool:
     # Permitimos solo paths locales (empiezan con /) para evitar open redirect
     return isinstance(nxt, str) and nxt.startswith("/")
+
+@app.before_request
+def load_user_into_g():
+    g.user = get_current_user()
 
 # ------------------------------------------------
 # Rutas utilitarias
@@ -96,7 +102,6 @@ def login():
     error = None
     nxt = request.args.get("next", "/panel")
     if request.method == "POST":
-        # preservamos next también desde POST si vino
         nxt = request.form.get("next", nxt) or "/panel"
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
@@ -111,18 +116,15 @@ def login():
         if not user:
             error = "Usuario inexistente"
         else:
-            if not user["password_hash"]:
+            if not user.get("password_hash"):
                 error = "Usuario sin contraseña configurada"
             elif not check_password_hash(user["password_hash"], password):
                 error = "Contraseña inválida"
             else:
-                # ok
                 session.permanent = True
                 session["uid"] = user["id"]
-                # Validamos next
                 return redirect(nxt if _is_safe_next(nxt) else url_for("panel"))
 
-    # GET o error → mostramos template
     return render_template("login.html", error=error, next=nxt)
 
 @app.route("/logout")
@@ -130,34 +132,38 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
+# (Placeholder para que no rompa el link del template)
+@app.route("/forgot")
+def forgot():
+    return "Recuperación de contraseña: próximamente.", 200
+
 # ------------------------------------------------
 # Panel del usuario logueado
 # ------------------------------------------------
 @app.route("/panel")
 def panel():
-    user = get_current_user()
-    if not user:
+    if not g.user:
         return redirect(url_for("login", next="/panel"))
 
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, public_code, user_id, claimed_at
+        SELECT id, public_code, user_id, claimed_at, qr_code_string
         FROM qr_codes
         WHERE user_id=%s
         ORDER BY id DESC
-    """, (user["id"],))
-    qrs = cur.fetchall()
+    """, (g.user["id"],))
+    codes = cur.fetchall()
     cur.close()
     conn.close()
 
-    return render_template("panel.html", user=user, qrs=qrs)
+    return render_template("panel.html", codes=codes)
 
 # ------------------------------------------------
 # Flujo público QR (virgen → login+claim, reclamado → ficha)
 # ------------------------------------------------
 @app.route("/v/<code>")
-def view_public_code(code):
+def view_by_code(code):
     """
     Entrada pública de una etiqueta con public_code.
     - Si no existe -> 404
@@ -187,14 +193,12 @@ def claim_code(code):
     Si el código no existe → 404
     Si ya está reclamado → redirige a /emergencia/<id>
     """
-    user = get_current_user()
-    if not user:
+    if not g.user:
         return redirect(url_for("login", next=f"/claim/{code}"))
 
     conn = get_db()
     cur = conn.cursor(dictionary=True)
 
-    # Buscamos el QR
     cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     if not row:
@@ -202,80 +206,93 @@ def claim_code(code):
         conn.close()
         abort(404)
 
-    # Si ya estaba reclamado, vamos a la ficha
     if row["user_id"] is not None:
         qr_id = row["id"]
         cur.close()
         conn.close()
         return redirect(url_for("emergencia", qr_id=qr_id))
 
-    # Reclamar (solo si sigue virgen)
     cur.execute(
         "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
-        (user["id"], code)
+        (g.user["id"], code)
     )
-    # Recuperamos ID para mostrarlo si queremos
-    cur.execute("SELECT id FROM qr_codes WHERE public_code=%s", (code,))
-    row2 = cur.fetchone()
     cur.close()
     conn.close()
 
-    # A panel (ahí verá el nuevo QR)
     return redirect(url_for("panel"))
 
 # ------------------------------------------------
 # Ficha pública (solo si el QR tiene dueño)
 # ------------------------------------------------
+def _pick(d: dict, candidates, default=""):
+    """Devuelve el primer campo existente/no vacío en d, o default."""
+    for k in candidates:
+        if k in d and d[k] not in (None, ""):
+            v = d[k]
+            # normalizo strings con espacios
+            if isinstance(v, str):
+                v = v.strip()
+            if v not in (None, ""):
+                return v
+    return default
+
 @app.route("/emergencia/<int:qr_id>")
 def emergencia(qr_id):
     """
     Muestra la ficha SOLO si el QR ya fue reclamado (user_id NO NULL).
     Si no tiene dueño -> 404
     """
+    # 1) Busco el QR y su dueño
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT q.id, q.user_id,
-               u.nombre, u.apellido, u.grupo_sanguineo, u.alergias,
-               u.contacto1, u.contacto2
-        FROM qr_codes q
-        LEFT JOIN users u ON u.id = q.user_id
-        WHERE q.id=%s
-    """, (qr_id,))
-    data = cur.fetchone()
+    cur.execute("SELECT id, user_id FROM qr_codes WHERE id=%s", (qr_id,))
+    qr = cur.fetchone()
+    if not qr:
+        cur.close()
+        conn.close()
+        abort(404)
+    if qr["user_id"] is None:
+        cur.close()
+        conn.close()
+        abort(404)
+
+    # 2) Traigo el usuario *completo* (no hago suposiciones de columnas)
+    cur.execute("SELECT * FROM users WHERE id=%s", (qr["user_id"],))
+    u = cur.fetchone() or {}
     cur.close()
     conn.close()
 
-    if not data:
-        abort(404)
+    # 3) Armo el diccionario que espera tu template emergencia.html (data.*)
+    nombre = _pick(u, ["nombre", "full_name", "name"])
+    apellido = _pick(u, ["apellido", "last_name"])
+    factor_sanguineo = _pick(u, ["factor_sanguineo", "grupo_sanguineo", "blood_group"])
+    alergias_txt = _pick(u, ["alergias", "allergies"], "")
+    tiene_alergias = bool(alergias_txt.strip()) if isinstance(alergias_txt, str) else bool(alergias_txt)
+    telefono_1 = _pick(u, ["telefono_1", "contacto1", "phone1"])
+    telefono_2 = _pick(u, ["telefono_2", "contacto2", "phone2"])
+    instructivo_url = _pick(u, ["instructivo_url"])
 
-    if data["user_id"] is None:
-        # Si preferís forzar flujo de claim, se podría redirigir:
-        # return redirect(url_for("login", next=f"/claim/{public_code}"))
-        abort(404)
+    data = {
+        "nombre": nombre,
+        "apellido": apellido,
+        "factor_sanguineo": factor_sanguineo,
+        "tiene_alergias": tiene_alergias,
+        "telefono_1": telefono_1,
+        "telefono_2": telefono_2,
+        "instructivo_url": instructivo_url,
+    }
 
-    # Render (adaptá a tu template 'emergencia.html')
-    return render_template(
-        "emergencia.html",
-        nombre=(data.get("nombre") or ""),
-        apellido=(data.get("apellido") or ""),
-        grupo_sanguineo=(data.get("grupo_sanguineo") or ""),
-        alergias=(data.get("alergias") or "No"),
-        contacto1=(data.get("contacto1") or ""),
-        contacto2=(data.get("contacto2") or "")
-    )
+    return render_template("emergencia.html", data=data)
 
 # ------------------------------------------------
 # Filtro de path (por si querés exponer menos info en logs)
 # ------------------------------------------------
 @app.after_request
 def add_headers(resp):
-    # cache bust
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
 if __name__ == "__main__":
-    # Útil para correr local
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
