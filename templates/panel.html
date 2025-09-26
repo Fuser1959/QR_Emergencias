@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Panel</title>
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:#f6f7fb; color:#111; }
+    .top { background:#fff; padding:14px 20px; box-shadow:0 1px 8px rgba(0,0,0,.06); display:flex; align-items:center; justify-content:space-between; }
+    .wrap { max-width:980px; margin:24px auto; padding:0 16px; }
+    h1 { margin:0 0 14px; }
+    .note { background:#e0f2fe; color:#0c4a6e; padding:12px 14px; border-radius:10px; }
+    table { width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.06); }
+    th, td { padding:12px 14px; border-bottom:1px solid #eef2f7; text-align:left; font-size:14px; }
+    th { background:#f9fafb; color:#374151; }
+    a.btn { display:inline-block; padding:6px 10px; border-radius:8px; background:#2563eb; color:#fff; text-decoration:none; font-size:13px; }
+    .muted { color:#6b7280; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div><strong>Tus Códigos QR</strong></div>
+    <div class="muted">{{ g.user.email }} &nbsp;|&nbsp; <a href="{{ url_for('logout') }}">Salir</a></div>
+  </div>
+
+  <div class="wrap">
+    {% if not codes %}
+      <p class="note">Todavía no tenés QR asociados. Reclamá uno escaneando una etiqueta virgen
+        o pidiéndonos que lo vinculemos manualmente.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>QR interno</th>
+            <th>Código público</th>
+            <th>Vista pública</th>
+            <th>Ficha</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in codes %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ c.qr_code_string or ('ID '+c.id|string) }}</td>
+            <td><code>{{ c.public_code }}</code></td>
+            <td><a class="btn" href="{{ url_for('view_by_code', code=c.public_code) }}" target="_blank">/v/{{ c.public_code }}</a></td>
+            <td><a class="btn" href="{{ url_for('emergencia', qr_id=c.id) }}" target="_blank">/emergencia/{{ c.id }}</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</body>
+</html>
