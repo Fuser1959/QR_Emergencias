@@ -1,238 +1,281 @@
-# app.py
 import os
-import secrets
-import datetime as dt
+import re
+from datetime import timedelta
+
+from flask import (
+    Flask, request, render_template, redirect, url_for,
+    session, abort, jsonify
+)
 import mysql.connector
-from flask import Flask, request, render_template, redirect, url_for, session, flash, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
-from email.message import EmailMessage
-import smtplib
+from werkzeug.security import check_password_hash
 
+# -----------------------------
+# Configuración de la app Flask
+# -----------------------------
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 
-# ----- Config DB (Railway) -----
+# SECRET KEY (usá una variable de entorno en producción)
+app.secret_key = os.environ.get("FLASK_SECRET", "change-me-in-prod")
+app.permanent_session_lifetime = timedelta(days=14)
+
+# -----------------------------
+# Config DB (toma primero QR_DB_*, si no, MYSQL*)
+# -----------------------------
+def _env(*names, default=None):
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v
+    return default
+
+DB_HOST = _env("QR_DB_HOST", "MYSQLHOST", default="mysql.railway.internal")
+DB_PORT = int(_env("QR_DB_PORT", "MYSQLPORT", default="3306"))
+DB_NAME = _env("QR_DB_NAME", "MYSQLDATABASE", default="railway")
+DB_USER = _env("QR_DB_USER", "MYSQLUSER", default="root")
+DB_PASS = _env("QR_DB_PASSWORD", "MYSQLPASSWORD", default="")
+
+# ------------------------------------------------
+# Helpers de DB y de sesión
+# ------------------------------------------------
 def get_db():
-    cfg = dict(
-        host=os.getenv("QR_DB_HOST", "mysql.railway.internal"),
-        user=os.getenv("QR_DB_USER", "root"),
-        password=os.getenv("QR_DB_PASSWORD", ""),
-        database=os.getenv("QR_DB_NAME", os.getenv("QR_DB_DATABASE", "railway")),
-        port=int(os.getenv("QR_DB_PORT", "3306")),
+    return mysql.connector.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
         autocommit=True
     )
-    return mysql.connector.connect(**cfg)
 
-# helpers de password
-def make_password(pwd: str) -> str:
-    return generate_password_hash(pwd)
+def get_current_user():
+    uid = session.get("uid")
+    if not uid:
+        return None
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, email, nombre, apellido FROM users WHERE id=%s", (uid,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user
 
-def check_password(pwd: str, ph: str) -> bool:
-    if not ph:
-        return False
-    return check_password_hash(ph, pwd)
+def _is_safe_next(nxt: str) -> bool:
+    # Permitimos solo paths locales (empiezan con /) para evitar open redirect
+    return isinstance(nxt, str) and nxt.startswith("/")
 
-# helper de mail
-def send_mail(to_email: str, subject: str, html: str, text: str = ""):
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER")
-    pwd  = os.getenv("SMTP_PASS")
-    sender = os.getenv("SMTP_FROM", user or "noreply@example.com")
+# ------------------------------------------------
+# Rutas utilitarias
+# ------------------------------------------------
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
 
-    if not host or not user or not pwd:
-        # sin SMTP: imprimir para pruebas
-        print(f"[MAIL-FAKE]\nTo: {to_email}\nSubject: {subject}\n{text}\n----HTML----\n{html}\n")
-        return
-
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(text or "Abrí este correo en un cliente compatible con HTML.")
-    msg.add_alternative(html, subtype="html")
-    with smtplib.SMTP(host, port) as s:
-        s.starttls()
-        s.login(user, pwd)
-        s.send_message(msg)
-
-# ---------- RUTAS ----------
+@app.route("/db_ping")
+def db_ping():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "db_ok", "db_host": DB_HOST, "db_name": DB_NAME})
+    except Exception as e:
+        return jsonify({"status": "db_error", "db_host": DB_HOST, "db_name": DB_NAME, "error": str(e)}), 500
 
 @app.route("/")
-def index():
-    # landing simple (podés cambiarla luego)
+def home():
+    # Por ahora, el "inicio" es el login
     return redirect(url_for("login"))
 
-# --- LOGIN con mensajes diferenciados
+# ------------------------------------------------
+# Autenticación
+# ------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    next_url = request.args.get("next") or url_for("panel")
     error = None
+    nxt = request.args.get("next", "/panel")
     if request.method == "POST":
+        # preservamos next también desde POST si vino
+        nxt = request.form.get("next", nxt) or "/panel"
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
-        cnx = get_db()
-        cur = cnx.cursor(dictionary=True)
+
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
         cur.execute("SELECT id, email, password_hash FROM users WHERE email=%s", (email,))
-        row = cur.fetchone()
-        cur.close(); cnx.close()
-        if not row:
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not user:
             error = "Usuario inexistente"
         else:
-            if not check_password(password, row["password_hash"]):
+            if not user["password_hash"]:
+                error = "Usuario sin contraseña configurada"
+            elif not check_password_hash(user["password_hash"], password):
                 error = "Contraseña inválida"
             else:
-                session["uid"] = row["id"]
-                return redirect(next_url)
-    return render_template("login.html", error=error, next=next_url)
+                # ok
+                session.permanent = True
+                session["uid"] = user["id"]
+                # Validamos next
+                return redirect(nxt if _is_safe_next(nxt) else url_for("panel"))
+
+    # GET o error → mostramos template
+    return render_template("login.html", error=error, next=nxt)
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# --- Panel del usuario (lista sus QR)
+# ------------------------------------------------
+# Panel del usuario logueado
+# ------------------------------------------------
 @app.route("/panel")
 def panel():
-    uid = session.get("uid")
-    if not uid:
-        return redirect(url_for("login", next=url_for("panel")))
-    cnx = get_db(); cur = cnx.cursor(dictionary=True)
-    cur.execute("""SELECT id, public_code, COALESCE(qr_code_string,'') AS qr_code_string
-                   FROM qr_codes WHERE user_id=%s ORDER BY id DESC""", (uid,))
-    qrs = cur.fetchall()
-    cur.close(); cnx.close()
-    return render_template("panel.html", qrs=qrs)
+    user = get_current_user()
+    if not user:
+        return redirect(url_for("login", next="/panel"))
 
-# --- Vista pública por código
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT id, public_code, user_id, claimed_at
+        FROM qr_codes
+        WHERE user_id=%s
+        ORDER BY id DESC
+    """, (user["id"],))
+    qrs = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return render_template("panel.html", user=user, qrs=qrs)
+
+# ------------------------------------------------
+# Flujo público QR (virgen → login+claim, reclamado → ficha)
+# ------------------------------------------------
 @app.route("/v/<code>")
-def view_public(code):
-    cnx = get_db(); cur = cnx.cursor(dictionary=True)
+def view_public_code(code):
+    """
+    Entrada pública de una etiqueta con public_code.
+    - Si no existe -> 404
+    - Si existe y no está reclamada (user_id IS NULL) -> redirige a /login?next=/claim/<code>
+    - Si ya está reclamada -> redirige a /emergencia/<id>
+    """
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
-    cur.close(); cnx.close()
+    cur.close()
+    conn.close()
+
     if not row:
-        return "Código inexistente", 404
-    if not row["user_id"]:
-        # no reclamado: llevar al claim
-        return redirect(url_for("claim_code", code=code))
-    # si está reclamado, redirige a la ficha actual /emergencia/<id>
+        abort(404)
+
+    if row["user_id"] is None:
+        return redirect(url_for("login", next=f"/claim/{code}"))
+
     return redirect(url_for("emergencia", qr_id=row["id"]))
 
-# --- Reclamar código (requiere login)
-@app.route("/claim/<code>")
+@app.route("/claim/<code>", methods=["GET"])
 def claim_code(code):
-    uid = session.get("uid")
-    if not uid:
-        return redirect(url_for("login", next=url_for("claim_code", code=code)))
-    cnx = get_db(); cur = cnx.cursor(dictionary=True)
-    # asegura que existe y no tiene dueño
+    """
+    Reclama (asocia) el public_code al usuario logueado.
+    Si no está logueado → /login?next=/claim/<code>
+    Si el código no existe → 404
+    Si ya está reclamado → redirige a /emergencia/<id>
+    """
+    user = get_current_user()
+    if not user:
+        return redirect(url_for("login", next=f"/claim/{code}"))
+
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+
+    # Buscamos el QR
     cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     if not row:
-        cur.close(); cnx.close()
-        return "Código inexistente.", 404
-    if row["user_id"]:
-        cur.close(); cnx.close()
-        return redirect(url_for("panel"))
+        cur.close()
+        conn.close()
+        abort(404)
 
-    cur.execute("UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE id=%s", (uid, row["id"]))
-    cnx.commit()
-    cur.close(); cnx.close()
-    flash("Tu QR fue activado y vinculado a tu cuenta.", "ok")
+    # Si ya estaba reclamado, vamos a la ficha
+    if row["user_id"] is not None:
+        qr_id = row["id"]
+        cur.close()
+        conn.close()
+        return redirect(url_for("emergencia", qr_id=qr_id))
+
+    # Reclamar (solo si sigue virgen)
+    cur.execute(
+        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
+        (user["id"], code)
+    )
+    # Recuperamos ID para mostrarlo si queremos
+    cur.execute("SELECT id FROM qr_codes WHERE public_code=%s", (code,))
+    row2 = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    # A panel (ahí verá el nuevo QR)
     return redirect(url_for("panel"))
 
-# --- Emergencia (ficha pública por id)
+# ------------------------------------------------
+# Ficha pública (solo si el QR tiene dueño)
+# ------------------------------------------------
 @app.route("/emergencia/<int:qr_id>")
 def emergencia(qr_id):
-    # renderiza la ficha; acá solo demo mínima
-    cnx = get_db(); cur = cnx.cursor(dictionary=True)
-    # en tu proyecto usás más datos; aquí dejamos lo esencial
-    cur.execute("""SELECT qc.id, u.email
-                   FROM qr_codes qc
-                   LEFT JOIN users u ON u.id = qc.user_id
-                   WHERE qc.id=%s""", (qr_id,))
-    row = cur.fetchone()
-    cur.close(); cnx.close()
-    if not row:
-        return "QR no encontrado", 404
-    # reutilizo tu template existente de ficha
-    return render_template("emergencia.html", data=row)
+    """
+    Muestra la ficha SOLO si el QR ya fue reclamado (user_id NO NULL).
+    Si no tiene dueño -> 404
+    """
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT q.id, q.user_id,
+               u.nombre, u.apellido, u.grupo_sanguineo, u.alergias,
+               u.contacto1, u.contacto2
+        FROM qr_codes q
+        LEFT JOIN users u ON u.id = q.user_id
+        WHERE q.id=%s
+    """, (qr_id,))
+    data = cur.fetchone()
+    cur.close()
+    conn.close()
 
-# --- Recupero: solicitar email
-@app.route("/forgot", methods=["GET", "POST"])
-def forgot():
-    sent = False
-    msg  = None
-    if request.method == "POST":
-        email = (request.form.get("email") or "").strip().lower()
-        if email:
-            cnx = get_db(); cur = cnx.cursor(dictionary=True)
-            cur.execute("SELECT id FROM users WHERE email=%s", (email,))
-            u = cur.fetchone()
-            if u:
-                token = secrets.token_urlsafe(32)
-                expires = dt.datetime.utcnow() + dt.timedelta(hours=1)
-                cur.execute("UPDATE users SET reset_token=%s, reset_expires=%s WHERE id=%s",
-                            (token, expires, u["id"]))
-                cnx.commit()
-                base = os.getenv("BASE_PUBLIC_URL", request.url_root.rstrip("/"))
-                link = f"{base}/reset/{token}"
-                html = f"""
-                <p>Para blanquear tu contraseña, hacé clic en el siguiente enlace (vence en 1 hora):</p>
-                <p><a href="{link}">{link}</a></p>
-                """
-                send_mail(email, "Blanquear contraseña - QR Emergencias", html, link)
-            cur.close(); cnx.close()
-            sent = True
-            msg = "Si el email existe, enviamos un enlace para blanquear la contraseña."
-    return render_template("forgot_password.html", sent=sent, msg=msg)
+    if not data:
+        abort(404)
 
-# --- Recupero: setear nueva contraseña
-@app.route("/reset/<token>", methods=["GET", "POST"])
-def reset_token(token):
-    cnx = get_db(); cur = cnx.cursor(dictionary=True)
-    cur.execute("SELECT id, reset_expires FROM users WHERE reset_token=%s", (token,))
-    u = cur.fetchone()
+    if data["user_id"] is None:
+        # Si preferís forzar flujo de claim, se podría redirigir:
+        # return redirect(url_for("login", next=f"/claim/{public_code}"))
+        abort(404)
 
-    invalid = False
-    if not u:
-        invalid = True
-    else:
-        if not u["reset_expires"] or u["reset_expires"] < dt.datetime.utcnow():
-            invalid = True
+    # Render (adaptá a tu template 'emergencia.html')
+    return render_template(
+        "emergencia.html",
+        nombre=(data.get("nombre") or ""),
+        apellido=(data.get("apellido") or ""),
+        grupo_sanguineo=(data.get("grupo_sanguineo") or ""),
+        alergias=(data.get("alergias") or "No"),
+        contacto1=(data.get("contacto1") or ""),
+        contacto2=(data.get("contacto2") or "")
+    )
 
-    if request.method == "POST" and not invalid:
-        pwd = request.form.get("password") or ""
-        pwd2 = request.form.get("password2") or ""
-        if len(pwd) < 6:
-            flash("La contraseña debe tener al menos 6 caracteres.", "error")
-        elif pwd != pwd2:
-            flash("Las contraseñas no coinciden.", "error")
-        else:
-            ph = make_password(pwd)
-            cur.execute("""UPDATE users SET password_hash=%s, reset_token=NULL, reset_expires=NULL
-                           WHERE id=%s""", (ph, u["id"]))
-            cnx.commit()
-            cur.close(); cnx.close()
-            flash("Contraseña actualizada. Ya podés iniciar sesión.", "ok")
-            return redirect(url_for("login"))
+# ------------------------------------------------
+# Filtro de path (por si querés exponer menos info en logs)
+# ------------------------------------------------
+@app.after_request
+def add_headers(resp):
+    # cache bust
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
-    cur.close(); cnx.close()
-    return render_template("reset_password.html", invalid=invalid)
-
-# --- Salud
-@app.route("/db_ping")
-def db_ping():
-    try:
-        cnx = get_db()
-        cur = cnx.cursor()
-        cur.execute("SELECT DATABASE()")
-        db = cur.fetchone()[0]
-        cur.close(); cnx.close()
-        return jsonify(status="db_ok", db_name=db)
-    except Exception as e:
-        return jsonify(status="db_error", error=str(e)), 500
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # Útil para correr local
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
