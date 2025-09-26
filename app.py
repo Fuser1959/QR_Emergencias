@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import timedelta
 
 from flask import (
@@ -59,6 +60,7 @@ def get_current_user():
     return user
 
 def _is_safe_next(nxt: str) -> bool:
+    # Permitimos solo paths locales (empiezan con /) para evitar open redirect
     return isinstance(nxt, str) and nxt.startswith("/")
 
 # ------------------------------------------------
@@ -83,6 +85,7 @@ def db_ping():
 
 @app.route("/")
 def home():
+    # Por ahora, el "inicio" es el login
     return redirect(url_for("login"))
 
 # ------------------------------------------------
@@ -93,6 +96,7 @@ def login():
     error = None
     nxt = request.args.get("next", "/panel")
     if request.method == "POST":
+        # preservamos next también desde POST si vino
         nxt = request.form.get("next", nxt) or "/panel"
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
@@ -112,16 +116,35 @@ def login():
             elif not check_password_hash(user["password_hash"], password):
                 error = "Contraseña inválida"
             else:
+                # ok
                 session.permanent = True
                 session["uid"] = user["id"]
+                # Validamos next
                 return redirect(nxt if _is_safe_next(nxt) else url_for("panel"))
 
+    # GET o error → mostramos template
     return render_template("login.html", error=error, next=nxt)
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+# -------- NUEVO: /forgot (stub para evitar 500 en /login) --------
+@app.route("/forgot", methods=["GET", "POST"])
+def forgot():
+    """
+    Página simple para recuperar contraseña (stub).
+    Ahora mismo solo muestra un formulario y un mensaje de 'enviado'.
+    Más adelante se implementará el flujo completo con token por email.
+    """
+    sent = False
+    email = ""
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        # No exponemos si el email existe o no (security best practice)
+        sent = True
+    return render_template("forgot.html", sent=sent, email=email)
 
 # ------------------------------------------------
 # Panel del usuario logueado
@@ -152,13 +175,14 @@ def panel():
 @app.route("/v/<code>")
 def view_public_code(code):
     """
+    Entrada pública de una etiqueta con public_code.
     - Si no existe -> 404
-    - Si existe y NO está reclamado (user_id IS NULL o claimed_at IS NULL) -> /login?next=/claim/<code>
-    - Si YA está reclamado (user_id y claimed_at NO NULL) -> /emergencia/<id>
+    - Si existe y no está reclamada (user_id IS NULL) -> redirige a /login?next=/claim/<code>
+    - Si ya está reclamada -> redirige a /emergencia/<id>
     """
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, user_id, claimed_at FROM qr_codes WHERE public_code=%s", (code,))
+    cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -166,7 +190,7 @@ def view_public_code(code):
     if not row:
         abort(404)
 
-    if row["user_id"] is None or row["claimed_at"] is None:
+    if row["user_id"] is None:
         return redirect(url_for("login", next=f"/claim/{code}"))
 
     return redirect(url_for("emergencia", qr_id=row["id"]))
@@ -174,7 +198,10 @@ def view_public_code(code):
 @app.route("/claim/<code>", methods=["GET"])
 def claim_code(code):
     """
-    Reclama el public_code al usuario logueado.
+    Reclama (asocia) el public_code al usuario logueado.
+    Si no está logueado → /login?next=/claim/<code>
+    Si el código no existe → 404
+    Si ya está reclamado → redirige a /emergencia/<id>
     """
     user = get_current_user()
     if not user:
@@ -183,40 +210,48 @@ def claim_code(code):
     conn = get_db()
     cur = conn.cursor(dictionary=True)
 
-    cur.execute("SELECT id, user_id, claimed_at FROM qr_codes WHERE public_code=%s", (code,))
+    # Buscamos el QR
+    cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     if not row:
         cur.close()
         conn.close()
         abort(404)
 
-    if row["user_id"] is not None and row["claimed_at"] is not None:
+    # Si ya estaba reclamado, vamos a la ficha
+    if row["user_id"] is not None:
         qr_id = row["id"]
         cur.close()
         conn.close()
         return redirect(url_for("emergencia", qr_id=qr_id))
 
-    # Reclamar (solo si sigue virgen / incompleto)
+    # Reclamar (solo si sigue virgen)
     cur.execute(
-        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND (user_id IS NULL OR claimed_at IS NULL)",
+        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
         (user["id"], code)
     )
+    # Recuperamos ID para mostrarlo si queremos
+    cur.execute("SELECT id FROM qr_codes WHERE public_code=%s", (code,))
+    row2 = cur.fetchone()
     cur.close()
     conn.close()
+
+    # A panel (ahí verá el nuevo QR)
     return redirect(url_for("panel"))
 
 # ------------------------------------------------
-# Ficha pública (solo si el QR tiene dueño COMPLETO)
+# Ficha pública (solo si el QR tiene dueño)
 # ------------------------------------------------
 @app.route("/emergencia/<int:qr_id>")
 def emergencia(qr_id):
     """
-    Muestra la ficha SOLO si q.user_id y q.claimed_at NO son NULL.
+    Muestra la ficha SOLO si el QR ya fue reclamado (user_id NO NULL).
+    Si no tiene dueño -> 404
     """
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT q.id, q.user_id, q.claimed_at,
+        SELECT q.id, q.user_id,
                u.nombre, u.apellido, u.grupo_sanguineo, u.alergias,
                u.contacto1, u.contacto2
         FROM qr_codes q
@@ -227,9 +262,13 @@ def emergencia(qr_id):
     cur.close()
     conn.close()
 
-    if not data or data["user_id"] is None or data["claimed_at"] is None:
+    if not data:
         abort(404)
 
+    if data["user_id"] is None:
+        abort(404)
+
+    # Render (adaptá a tu template 'emergencia.html')
     return render_template(
         "emergencia.html",
         nombre=(data.get("nombre") or ""),
@@ -240,11 +279,17 @@ def emergencia(qr_id):
         contacto2=(data.get("contacto2") or "")
     )
 
+# ------------------------------------------------
+# Filtro de path (por si querés exponer menos info en logs)
+# ------------------------------------------------
 @app.after_request
 def add_headers(resp):
+    # cache bust
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
+
 if __name__ == "__main__":
+    # Útil para correr local
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
