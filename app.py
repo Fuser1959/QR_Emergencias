@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from flask import (
     Flask, request, render_template, redirect, url_for,
-    session, abort, jsonify, g
+    session, abort, jsonify
 )
 import mysql.connector
 from werkzeug.security import check_password_hash
@@ -12,6 +12,8 @@ from werkzeug.security import check_password_hash
 # Configuración de la app Flask
 # -----------------------------
 app = Flask(__name__)
+
+# SECRET KEY (usá una variable de entorno en producción)
 app.secret_key = os.environ.get("FLASK_SECRET", "change-me-in-prod")
 app.permanent_session_lifetime = timedelta(days=14)
 
@@ -31,6 +33,9 @@ DB_NAME = _env("QR_DB_NAME", "MYSQLDATABASE", default="railway")
 DB_USER = _env("QR_DB_USER", "MYSQLUSER", default="root")
 DB_PASS = _env("QR_DB_PASSWORD", "MYSQLPASSWORD", default="")
 
+# ------------------------------------------------
+# Helpers de DB y de sesión
+# ------------------------------------------------
 def get_db():
     return mysql.connector.connect(
         host=DB_HOST,
@@ -41,32 +46,24 @@ def get_db():
         autocommit=True
     )
 
-# -----------------------------
-# Sesión / usuario actual
-# -----------------------------
 def get_current_user():
     uid = session.get("uid")
     if not uid:
         return None
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    # Traemos TODO lo que exista en users (no forzamos nombres de columnas)
-    cur.execute("SELECT * FROM users WHERE id=%s", (uid,))
+    cur.execute("SELECT id, email, nombre, apellido FROM users WHERE id=%s", (uid,))
     user = cur.fetchone()
     cur.close()
     conn.close()
     return user
 
-@app.before_request
-def _load_g_user():
-    g.user = get_current_user()
-
 def _is_safe_next(nxt: str) -> bool:
     return isinstance(nxt, str) and nxt.startswith("/")
 
-# -----------------------------
+# ------------------------------------------------
 # Rutas utilitarias
-# -----------------------------
+# ------------------------------------------------
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -88,9 +85,9 @@ def db_ping():
 def home():
     return redirect(url_for("login"))
 
-# -----------------------------
+# ------------------------------------------------
 # Autenticación
-# -----------------------------
+# ------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -110,7 +107,7 @@ def login():
         if not user:
             error = "Usuario inexistente"
         else:
-            if not user.get("password_hash"):
+            if not user["password_hash"]:
                 error = "Usuario sin contraseña configurada"
             elif not check_password_hash(user["password_hash"], password):
                 error = "Contraseña inválida"
@@ -126,43 +123,42 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# -----------------------------
-# Panel
-# -----------------------------
+# ------------------------------------------------
+# Panel del usuario logueado
+# ------------------------------------------------
 @app.route("/panel")
 def panel():
-    if not g.user:
+    user = get_current_user()
+    if not user:
         return redirect(url_for("login", next="/panel"))
 
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, public_code, user_id, claimed_at, qr_code_string
+        SELECT id, public_code, user_id, claimed_at
         FROM qr_codes
         WHERE user_id=%s
         ORDER BY id DESC
-    """, (g.user["id"],))
-    codes = cur.fetchall()
+    """, (user["id"],))
+    qrs = cur.fetchall()
     cur.close()
     conn.close()
 
-    # Tu template usa g.user y 'codes'
-    return render_template("panel.html", codes=codes)
+    return render_template("panel.html", user=user, qrs=qrs)
 
-# -----------------------------
-# Flujo público QR
-# -----------------------------
+# ------------------------------------------------
+# Flujo público QR (virgen → login+claim, reclamado → ficha)
+# ------------------------------------------------
 @app.route("/v/<code>")
-def view_by_code(code):
+def view_public_code(code):
     """
-    Entrada pública:
-      - si no existe -> 404
-      - si existe y user_id IS NULL -> /login?next=/claim/<code>
-      - si existe y user_id NO NULL -> /emergencia/<id>
+    - Si no existe -> 404
+    - Si existe y NO está reclamado (user_id IS NULL o claimed_at IS NULL) -> /login?next=/claim/<code>
+    - Si YA está reclamado (user_id y claimed_at NO NULL) -> /emergencia/<id>
     """
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
+    cur.execute("SELECT id, user_id, claimed_at FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -170,7 +166,7 @@ def view_by_code(code):
     if not row:
         abort(404)
 
-    if row["user_id"] is None:
+    if row["user_id"] is None or row["claimed_at"] is None:
         return redirect(url_for("login", next=f"/claim/{code}"))
 
     return redirect(url_for("emergencia", qr_id=row["id"]))
@@ -178,88 +174,72 @@ def view_by_code(code):
 @app.route("/claim/<code>", methods=["GET"])
 def claim_code(code):
     """
-    Reclama el código para el usuario logueado.
+    Reclama el public_code al usuario logueado.
     """
-    if not g.user:
+    user = get_current_user()
+    if not user:
         return redirect(url_for("login", next=f"/claim/{code}"))
 
     conn = get_db()
     cur = conn.cursor(dictionary=True)
 
-    cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
+    cur.execute("SELECT id, user_id, claimed_at FROM qr_codes WHERE public_code=%s", (code,))
     row = cur.fetchone()
     if not row:
         cur.close()
         conn.close()
         abort(404)
 
-    if row["user_id"] is not None:
+    if row["user_id"] is not None and row["claimed_at"] is not None:
+        qr_id = row["id"]
         cur.close()
         conn.close()
-        return redirect(url_for("emergencia", qr_id=row["id"]))
+        return redirect(url_for("emergencia", qr_id=qr_id))
 
-    # Reclamar solo si sigue virgen
+    # Reclamar (solo si sigue virgen / incompleto)
     cur.execute(
-        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
-        (g.user["id"], code)
+        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND (user_id IS NULL OR claimed_at IS NULL)",
+        (user["id"], code)
     )
     cur.close()
     conn.close()
-
     return redirect(url_for("panel"))
 
-# -----------------------------
-# Ficha pública (solo QR con dueño)
-# -----------------------------
+# ------------------------------------------------
+# Ficha pública (solo si el QR tiene dueño COMPLETO)
+# ------------------------------------------------
 @app.route("/emergencia/<int:qr_id>")
 def emergencia(qr_id):
     """
-    Muestra la ficha SOLO si q.user_id NO NULL.
-    No referenciamos columnas inexistentes: primero leemos el QR,
-    luego hacemos SELECT * del usuario y mapeamos con defaults.
+    Muestra la ficha SOLO si q.user_id y q.claimed_at NO son NULL.
     """
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-
-    cur.execute("SELECT id, user_id FROM qr_codes WHERE id=%s", (qr_id,))
-    q = cur.fetchone()
-    if not q:
-        cur.close()
-        conn.close()
-        abort(404)
-
-    if q["user_id"] is None:
-        cur.close()
-        conn.close()
-        abort(404)
-
-    # Traemos TODO del usuario, sin nombrar columnas
-    cur.execute("SELECT * FROM users WHERE id=%s", (q["user_id"],))
-    u = cur.fetchone()
+    cur.execute("""
+        SELECT q.id, q.user_id, q.claimed_at,
+               u.nombre, u.apellido, u.grupo_sanguineo, u.alergias,
+               u.contacto1, u.contacto2
+        FROM qr_codes q
+        LEFT JOIN users u ON u.id = q.user_id
+        WHERE q.id=%s
+    """, (qr_id,))
+    data = cur.fetchone()
     cur.close()
     conn.close()
 
-    if not u:
+    if not data or data["user_id"] is None or data["claimed_at"] is None:
         abort(404)
 
-    # Mapeo a las keys que usa tu template 'emergencia.html'
-    data = {
-        # Si no hay nombre, mostramos el email como identificador
-        "nombre": (u.get("nombre") or u.get("full_name") or u.get("email") or "").strip(),
-        "apellido": (u.get("apellido") or "").strip(),
-        "factor_sanguineo": (u.get("factor_sanguineo") or u.get("grupo_sanguineo") or "").strip(),
-        # Interpretamos flags/strings variados como boolean para 'tiene_alergias'
-        "tiene_alergias": bool(u.get("tiene_alergias") or u.get("alergias") in ("si", "sí", "1", 1, True)),
-        "telefono_1": (u.get("telefono_1") or u.get("contacto1") or "").strip(),
-        "telefono_2": (u.get("telefono_2") or u.get("contacto2") or "").strip(),
-        "instructivo_url": (u.get("instructivo_url") or "").strip(),
-    }
+    return render_template(
+        "emergencia.html",
+        nombre=(data.get("nombre") or ""),
+        apellido=(data.get("apellido") or ""),
+        grupo_sanguineo=(data.get("grupo_sanguineo") or ""),
+        alergias=(data.get("alergias") or "No"),
+        contacto1=(data.get("contacto1") or ""),
+        contacto2=(data.get("contacto2") or "")
+    )
 
-    return render_template("emergencia.html", data=data)
-
-# -----------------------------
-# No-cache
-# -----------------------------
 @app.after_request
 def add_headers(resp):
     resp.headers["Cache-Control"] = "no-store"
