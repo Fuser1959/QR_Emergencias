@@ -314,6 +314,47 @@ def view_public_code(code):
 
     return redirect(url_for("emergencia", qr_id=row["id"]))
 
+# --- NUEVO: carga manual del código desde una vista ---
+@app.route("/claim", methods=["GET", "POST"])
+def claim_manual():
+    """
+    Vista con formulario para ingresar 'public_code'.
+    - GET: muestra formulario
+    - POST: valida el código y redirige al flujo /claim/<code>
+    """
+    error = None
+    if request.method == "POST":
+        code = (request.form.get("code") or "").strip().upper()
+        # Permitimos letras, números y guiones, 4 a 64 chars (ajustable a tu formato real)
+        if not code:
+            error = "Ingresá el código."
+        elif not re.fullmatch(r"[A-Z0-9\-]{4,64}", code):
+            error = "Formato de código inválido."
+        else:
+            # Verificamos existencia y estado para dar una UX más clara
+            conn = get_db()
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT id, user_id FROM qr_codes WHERE public_code=%s", (code,))
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+
+            if not row:
+                error = "El código no existe."
+            else:
+                user = get_current_user()
+                if row["user_id"] is None:
+                    # Si no está logueado, igual /claim/<code> lo manda a login con next
+                    return redirect(url_for("claim_code", code=code))
+                elif user and row["user_id"] == user["id"]:
+                    # Ya es tuyo → panel
+                    return redirect(url_for("panel"))
+                else:
+                    # Tiene dueño → mostramos la ficha pública
+                    return redirect(url_for("emergencia", qr_id=row["id"]))
+
+    return render_template("claim_manual.html", error=error)
+
 @app.route("/claim/<code>", methods=["GET"])
 def claim_code(code):
     """

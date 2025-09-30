@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Asociar QR manualmente</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu; max-width: 520px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 1.3rem; margin-bottom: 12px; }
+    .flash { padding: 10px 12px; border-radius: 8px; margin: 10px 0; border: 1px solid #e0a0a0; background: #ffe9e9; color: #7a1e1e; }
+    form { display: grid; gap: 10px; }
+    input[type="text"] { padding: 10px; border-radius: 8px; border: 1px solid #ccc; width: 100%; text-transform: uppercase; }
+    button { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    a { color: #0b69ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <h1>Asociar QR</h1>
+  <p>Ingresá el <strong>código único</strong> impreso en tu etiqueta (por ejemplo <code>HAG5C9QK4M</code>) y lo vamos a vincular a tu cuenta.</p>
+
+  {% if error %}
+    <div class="flash">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/claim" autocomplete="off">
+    <input type="text" name="code" placeholder="Código público (ej. HAG5C9QK4M)" required value="{{ request.form.get('code','') }}">
+    <button type="submit">Continuar</button>
+  </form>
+
+  <p><a href="/panel">← Volver al panel</a></p>
+
+</body>
+</html>
