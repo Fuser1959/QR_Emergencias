@@ -7,7 +7,7 @@ from flask import (
     session, abort, jsonify
 )
 import mysql.connector
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # -----------------------------
 # Configuración de la app Flask
@@ -143,6 +143,44 @@ def forgot():
         # No exponemos si el email existe o no (security best practice)
         sent = True
     return render_template("forgot.html", sent=sent, email=email)
+
+# -------- /register (alta de usuario) --------
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    nxt = request.args.get("next", "/panel")
+    if request.method == "POST":
+        nxt = request.form.get("next", nxt) or "/panel"
+        nombre   = (request.form.get("nombre")   or "").strip()
+        apellido = (request.form.get("apellido") or "").strip()
+        email    = (request.form.get("email")    or "").strip().lower()
+        password =  request.form.get("password") or ""
+
+        if not (nombre and apellido and email and password):
+            error = "Completá todos los campos."
+        else:
+            conn = get_db()
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+            exists = cur.fetchone()
+            if exists:
+                error = "Ese email ya está registrado."
+                cur.close(); conn.close()
+            else:
+                pwd_hash = generate_password_hash(password)
+                cur.execute(
+                    "INSERT INTO users (email, nombre, apellido, password_hash) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (email, nombre, apellido, pwd_hash)
+                )
+                uid = cur.lastrowid
+                cur.close(); conn.close()
+
+                session.permanent = True
+                session["uid"] = uid
+                return redirect(nxt if _is_safe_next(nxt) else url_for("panel"))
+
+    return render_template("register.html", error=error, next=nxt)
 
 # ------------------------------------------------
 # Panel del usuario logueado
@@ -280,7 +318,7 @@ def add_headers(resp):
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
-# ---- DEBUG + RUTAS NUEVAS (deben estar ANTES de app.run) ----
+# ---- DEBUG + RUTAS AUXILIARES (deben estar ANTES de app.run) ----
 print("[DEBUG] app.py cargado OK")
 
 @app.route("/__ping__", methods=["GET"])
