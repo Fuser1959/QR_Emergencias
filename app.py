@@ -45,13 +45,73 @@ def get_db():
         autocommit=True
     )
 
+# Mapeo de nombres de columnas (cacheado)
+_USER_COLMAP = None
+def _detect_user_columns():
+    """
+    Detecta nombres reales de columnas en 'users' y devuelve un mapping:
+    first_name, last_name, blood, allergies, phone1, phone2
+    """
+    global _USER_COLMAP
+    if _USER_COLMAP is not None:
+        return _USER_COLMAP
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SHOW COLUMNS FROM users")
+        rows = cur.fetchall()  # tuples: (Field, Type, Null, Key, Default, Extra)
+        cols = set([r[0] for r in rows])
+    finally:
+        cur.close()
+        conn.close()
+
+    def pick(*candidates):
+        for c in candidates:
+            if c in cols:
+                return c
+        return None
+
+    _USER_COLMAP = {
+        "first": pick("nombre", "name", "first_name"),
+        "last": pick("apellido", "surname", "last_name"),
+        "blood": pick("grupo_sanguineo", "blood_type"),
+        "allergies": pick("alergias", "allergies", "allergies_bool"),
+        "phone1": pick("contacto1", "contact_phone_1", "phone1"),
+        "phone2": pick("contacto2", "contact_phone_2", "phone2"),
+        "email": pick("email"),
+        "pwd": pick("password_hash", "pass_hash"),
+        "id": pick("id")
+    }
+    return _USER_COLMAP
+
 def get_current_user():
     uid = session.get("uid")
     if not uid:
         return None
+
+    m = _detect_user_columns()
+    id_col = m["id"] or "id"
+    email_col = m["email"] or "email"
+    first_col = m["first"]
+    last_col = m["last"]
+
+    # Armamos SELECT compatible (si no hay columnas de nombre, devolvemos strings vacíos)
+    select_parts = [f"{id_col} AS id", f"{email_col} AS email"]
+    if first_col:
+        select_parts.append(f"{first_col} AS nombre")
+    else:
+        select_parts.append(f"'' AS nombre")
+    if last_col:
+        select_parts.append(f"{last_col} AS apellido")
+    else:
+        select_parts.append(f"'' AS apellido")
+
+    sql = f"SELECT {', '.join(select_parts)} FROM users WHERE {id_col}=%s"
+
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, email, nombre, apellido FROM users WHERE id=%s", (uid,))
+    cur.execute(sql, (uid,))
     user = cur.fetchone()
     cur.close()
     conn.close()
@@ -99,9 +159,13 @@ def login():
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
 
+        m = _detect_user_columns()
+        email_col = m["email"] or "email"
+        pwd_col = m["pwd"] or "password_hash"
+
         conn = get_db()
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT id, email, password_hash FROM users WHERE email=%s", (email,))
+        cur.execute(f"SELECT {m['id']} AS id, {email_col} AS email, {pwd_col} AS password_hash FROM users WHERE {email_col}=%s", (email,))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -156,24 +220,43 @@ def register():
         email    = (request.form.get("email")    or "").strip().lower()
         password =  request.form.get("password") or ""
 
-        if not (nombre and apellido and email and password):
-            error = "Completá todos los campos."
+        if not (email and password):
+            error = "Completá email y contraseña."
         else:
+            m = _detect_user_columns()
+            email_col = m["email"] or "email"
+            pwd_col   = m["pwd"] or "password_hash"
+            first_col = m["first"]  # puede ser None
+            last_col  = m["last"]   # puede ser None
+
             conn = get_db()
             cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+
+            # ¿ya existe?
+            cur.execute(f"SELECT {m['id']} AS id FROM users WHERE {email_col}=%s", (email,))
             exists = cur.fetchone()
             if exists:
                 error = "Ese email ya está registrado."
                 cur.close(); conn.close()
             else:
                 pwd_hash = generate_password_hash(password)
-                cur.execute(
-                    "INSERT INTO users (email, nombre, apellido, password_hash) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (email, nombre, apellido, pwd_hash)
-                )
+                # Inserción mínima (siempre válida)
+                cur.execute(f"INSERT INTO users ({email_col}, {pwd_col}) VALUES (%s, %s)", (email, pwd_hash))
                 uid = cur.lastrowid
+
+                # Si existen columnas de nombre, las actualizamos
+                update_parts = []
+                params = []
+                if first_col and nombre:
+                    update_parts.append(f"{first_col}=%s")
+                    params.append(nombre)
+                if last_col and apellido:
+                    update_parts.append(f"{last_col}=%s")
+                    params.append(apellido)
+                if update_parts:
+                    params.append(uid)
+                    cur.execute(f"UPDATE users SET {', '.join(update_parts)} WHERE {m['id']}=%s", tuple(params))
+
                 cur.close(); conn.close()
 
                 session.permanent = True
@@ -281,16 +364,39 @@ def emergencia(qr_id):
     Muestra la ficha SOLO si el QR ya fue reclamado (user_id NO NULL).
     Si no tiene dueño -> 404
     """
+    m = _detect_user_columns()
+    first_col = m["first"]
+    last_col = m["last"]
+    blood_col = m["blood"]
+    allergies_col = m["allergies"]
+    phone1_col = m["phone1"]
+    phone2_col = m["phone2"]
+
+    # Armamos SELECT seguro (si falta una columna, devolvemos vacío)
+    select_user_parts = []
+    if first_col:   select_user_parts.append(f"u.{first_col} AS nombre")
+    else:           select_user_parts.append(f"'' AS nombre")
+    if last_col:    select_user_parts.append(f"u.{last_col} AS apellido")
+    else:           select_user_parts.append(f"'' AS apellido")
+    if blood_col:   select_user_parts.append(f"u.{blood_col} AS grupo_sanguineo")
+    else:           select_user_parts.append(f"'' AS grupo_sanguineo")
+    if allergies_col: select_user_parts.append(f"u.{allergies_col} AS alergias")
+    else:             select_user_parts.append(f"'' AS alergias")
+    if phone1_col: select_user_parts.append(f"u.{phone1_col} AS contacto1")
+    else:          select_user_parts.append(f"'' AS contacto1")
+    if phone2_col: select_user_parts.append(f"u.{phone2_col} AS contacto2")
+    else:          select_user_parts.append(f"'' AS contacto2")
+
+    sql = f"""
+        SELECT q.id, q.user_id, {', '.join(select_user_parts)}
+        FROM qr_codes q
+        LEFT JOIN users u ON u.{m['id']} = q.user_id
+        WHERE q.id=%s
+    """
+
     conn = get_db()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT q.id, q.user_id,
-               u.nombre, u.apellido, u.grupo_sanguineo, u.alergias,
-               u.contacto1, u.contacto2
-        FROM qr_codes q
-        LEFT JOIN users u ON u.id = q.user_id
-        WHERE q.id=%s
-    """, (qr_id,))
+    cur.execute(sql, (qr_id,))
     data = cur.fetchone()
     cur.close()
     conn.close()
