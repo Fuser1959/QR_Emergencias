@@ -13,8 +13,6 @@ from werkzeug.security import check_password_hash
 # Configuración de la app Flask
 # -----------------------------
 app = Flask(__name__)
-
-# SECRET KEY (usá una variable de entorno en producción)
 app.secret_key = os.environ.get("FLASK_SECRET", "change-me-in-prod")
 app.permanent_session_lifetime = timedelta(days=14)
 
@@ -130,7 +128,7 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# -------- NUEVO: /forgot (stub para evitar 500 en /login) --------
+# -------- /forgot (stub para evitar 500 en /login) --------
 @app.route("/forgot", methods=["GET", "POST"])
 def forgot():
     """
@@ -230,9 +228,6 @@ def claim_code(code):
         "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
         (user["id"], code)
     )
-    # Recuperamos ID para mostrarlo si queremos
-    cur.execute("SELECT id FROM qr_codes WHERE public_code=%s", (code,))
-    row2 = cur.fetchone()
     cur.close()
     conn.close()
 
@@ -262,10 +257,7 @@ def emergencia(qr_id):
     cur.close()
     conn.close()
 
-    if not data:
-        abort(404)
-
-    if data["user_id"] is None:
+    if not data or data["user_id"] is None:
         abort(404)
 
     # Render (adaptá a tu template 'emergencia.html')
@@ -288,7 +280,24 @@ def add_headers(resp):
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
+# ---- DEBUG + RUTAS NUEVAS (deben estar ANTES de app.run) ----
+print("[DEBUG] app.py cargado OK")
 
+@app.route("/__ping__", methods=["GET"])
+def __ping__():
+    return "pong", 200
+
+# Placeholder de vista de enlace (solo para probar que carga)
+@app.route("/qr/link", methods=["GET"])
+def link_qr_view():
+    code = request.args.get("code") or session.get("pending_qr")
+    if not code:
+        return "No encontramos el código a asociar.", 400
+    return render_template("qr_link.html", code=code)
+
+# ------------------------------------------------
+# Entrypoint
+# ------------------------------------------------
 if __name__ == "__main__":
     # Útil para correr local
     port = int(os.environ.get("PORT", "5000"))
