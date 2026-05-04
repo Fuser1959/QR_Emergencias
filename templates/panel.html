@@ -3,60 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Panel</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu; max-width: 900px; margin: 30px auto; padding: 0 16px; }
-    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-    h1 { font-size: 1.2rem; }
-    a.btn, button.btn { display: inline-block; padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; text-decoration: none; color: #111; }
-    .empty { background: #eaf4ff; border: 1px solid #c9e1ff; color: #174888; padding: 12px; border-radius: 8px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
-    .right { text-align: right; }
-    nav { font-size: .9rem; }
-  </style>
+  <title>Mi panel — QR Emergencia</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
 </head>
-<body>
+<body class="bg-light">
 
-  <header>
-    <h1>Tus Códigos QR</h1>
-    <nav>
-      {{ user.email }} | <a href="/logout">Salir</a>
-    </nav>
-  </header>
+<div class="container py-4" style="max-width:860px;">
 
-  <p>
-    <a class="btn" href="/claim">➕ Asociar QR</a>
-  </p>
-
-  {% if not qrs %}
-    <div class="empty">
-      Todavía no tenés QR asociados. Podés <strong>asociar uno</strong> ahora cargando el código único, o escanear una etiqueta virgen.
+  <!-- Header -->
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h4 mb-0">
+      <i class="bi bi-qr-code me-2 text-primary"></i>Mis QR de emergencia
+    </h1>
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-muted small">{{ user.email }}</span>
+      <a href="/perfil" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-person-gear me-1"></i>Mi perfil
+      </a>
+      <a href="/logout" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-box-arrow-right me-1"></i>Salir
+      </a>
     </div>
-  {% else %}
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Código público</th>
-          <th>Asociado</th>
-          <th class="right">Acciones</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for qr in qrs %}
-        <tr>
-          <td>{{ qr.id }}</td>
-          <td>{{ qr.public_code }}</td>
-          <td>{{ qr.claimed_at or '-' }}</td>
-          <td class="right">
-            <a class="btn" href="/emergencia/{{ qr.id }}" target="_blank">Ver público</a>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  </div>
+
+  <!-- Aviso perfil incompleto -->
+  {% if not profile_complete %}
+  <div class="alert alert-warning d-flex align-items-start gap-2 mb-4">
+    <i class="bi bi-exclamation-triangle-fill fs-5 mt-1 flex-shrink-0"></i>
+    <div>
+      <strong>Tu ficha médica está vacía.</strong>
+      Si alguien escanea tu QR ahora, no va a ver ningún dato útil.
+      <a href="/perfil?onboarding=1" class="alert-link ms-1">Completá tu perfil →</a>
+    </div>
+  </div>
   {% endif %}
 
+  <!-- Acciones -->
+  <div class="mb-3">
+    <a class="btn btn-primary" href="/claim">
+      <i class="bi bi-plus-lg me-1"></i>Asociar QR
+    </a>
+  </div>
+
+  <!-- Lista de QR -->
+  {% if not qrs %}
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle me-1"></i>
+    Todavía no tenés QR asociados. Podés <strong>asociar uno</strong> ingresando el código
+    de tu etiqueta, o escaneando una etiqueta virgen.
+  </div>
+  {% else %}
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>#</th>
+            <th>Código</th>
+            <th>Asociado el</th>
+            <th>Estado</th>
+            <th class="text-end">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for qr in qrs %}
+          <tr>
+            <td class="text-muted small align-middle">{{ qr.id }}</td>
+            <td class="align-middle">
+              <code class="fs-6">{{ qr.public_code }}</code>
+            </td>
+            <td class="align-middle text-muted small">
+              {{ qr.claimed_at.strftime('%d/%m/%Y') if qr.claimed_at else '-' }}
+            </td>
+            <td class="align-middle">
+              {% if profile_complete %}
+                <span class="badge bg-success">
+                  <i class="bi bi-check-circle me-1"></i>Activo
+                </span>
+              {% else %}
+                <span class="badge bg-warning text-dark">
+                  <i class="bi bi-exclamation-circle me-1"></i>Sin datos
+                </span>
+              {% endif %}
+            </td>
+            <td class="text-end align-middle">
+              <a class="btn btn-sm btn-outline-primary" href="/emergencia/{{ qr.id }}" target="_blank">
+                <i class="bi bi-eye me-1"></i>Ver ficha
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
 </body>
 </html>

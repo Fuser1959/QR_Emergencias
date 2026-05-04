@@ -3,40 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Iniciar sesión</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu; max-width: 420px; margin: 40px auto; padding: 0 16px; }
-    h1 { font-size: 1.4rem; margin-bottom: 12px; }
-    .flash { padding: 10px 12px; border-radius: 8px; margin: 10px 0; border: 1px solid #e0a0a0; background: #ffe9e9; color: #7a1e1e; }
-    form { display: grid; gap: 10px; }
-    input[type="email"], input[type="password"] { padding: 10px; border-radius: 8px; border: 1px solid #ccc; width: 100%; }
-    button { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
-    .muted { color: #666; font-size: .9rem; margin-top: 6px; }
-    a { color: #0b69ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-  </style>
+  <title>Iniciar sesión — QR Emergencia</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body>
+<body class="bg-light">
 
-  <h1>Iniciar sesión</h1>
+<div class="container py-5" style="max-width:420px;">
+  <div class="text-center mb-4">
+    <div style="font-size:2.5rem;">🚨</div>
+    <h1 class="h4 mt-2">QR Emergencia</h1>
+    <p class="text-muted small">Iniciá sesión para gestionar tus etiquetas</p>
+  </div>
 
-  {% if error %}
-    <div class="flash">{{ error }}</div>
-  {% endif %}
+  <div class="card shadow-sm">
+    <div class="card-body p-4">
 
-  <form method="post" action="/login" autocomplete="on">
-    <input type="email" name="email" placeholder="Email" required value="{{ request.form.get('email','') }}">
-    <input type="password" name="password" placeholder="Contraseña" required>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for cat, msg in messages %}
+          <div class="alert alert-{{ 'success' if cat == 'success' else 'danger' }}">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
 
-    <!-- Imprescindible para que, tras login, redirija a /claim/<code> o /panel -->
-    <input type="hidden" name="next" value="{{ next }}">
+      {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+      {% endif %}
 
-    <button type="submit">Entrar</button>
-  </form>
+      <form method="post" action="/login" autocomplete="on">
+        <input type="hidden" name="next" value="{{ next }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-  <p class="muted">
-    <a href="/forgot">Olvidé mi contraseña</a>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Email</label>
+          <input type="email" name="email" class="form-control" placeholder="tu@email.com"
+                 required value="{{ request.form.get('email','') }}" autofocus>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Contraseña</label>
+          <input type="password" name="password" class="form-control" placeholder="••••••••" required>
+        </div>
+
+        <div class="d-grid mb-3">
+          <button type="submit" class="btn btn-primary btn-lg">Entrar</button>
+        </div>
+      </form>
+
+      <div class="text-center small">
+        <a href="/forgot" class="text-muted">Olvidé mi contraseña</a>
+      </div>
+
+    </div>
+  </div>
+
+  <p class="text-center mt-3 small">
+    ¿No tenés cuenta?
+    <a href="/register?next={{ next | urlencode }}">Registrate gratis</a>
   </p>
+</div>
 
 </body>
 </html>

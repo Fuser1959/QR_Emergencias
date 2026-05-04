@@ -25,6 +25,7 @@
   {% endif %}
 
   <form method="post" action="/claim" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="code" placeholder="Código público (ej. HAG5C9QK4M)" required value="{{ request.form.get('code','') }}">
     <button type="submit">Continuar</button>
   </form>

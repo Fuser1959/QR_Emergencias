@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .env
+
+# Archivos generados localmente
+labels/*.png
+*.pdf

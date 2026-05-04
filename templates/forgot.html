@@ -30,6 +30,7 @@
       <div class="center"><a href="{{ url_for('login') }}">Volver a iniciar sesión</a></div>
     {% else %}
       <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="email" name="email" placeholder="tu@email.com" required>
         <button class="btn" type="submit">Enviar</button>
       </form>
