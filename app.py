@@ -142,6 +142,30 @@ def _is_safe_next(nxt: str) -> bool:
     return isinstance(nxt, str) and nxt.startswith("/")
 
 
+def _ensure_qr_status_column():
+    """
+    Agrega columna status a qr_codes si no existe y sincroniza valores iniciales.
+    Se llama una vez al arrancar la app.
+    """
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SHOW COLUMNS FROM qr_codes")
+        existing = {r[0] for r in cur.fetchall()}
+        if "status" not in existing:
+            cur.execute(
+                "ALTER TABLE qr_codes ADD COLUMN status "
+                "ENUM('unclaimed','active','inactive') NOT NULL DEFAULT 'unclaimed'"
+            )
+            # Sincronizar estado inicial
+            cur.execute("UPDATE qr_codes SET status='active' WHERE user_id IS NOT NULL")
+            cur.execute("UPDATE qr_codes SET status='unclaimed' WHERE user_id IS NULL")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] _ensure_qr_status_column: {e}")
+
+
 def _ensure_profile_columns():
     """
     Agrega columnas de perfil médico a 'users' si no existen.
@@ -181,7 +205,10 @@ def _ensure_profile_columns():
 
 # Ejecutar al arrancar
 with app.app_context():
+    if not os.environ.get("FLASK_SECRET"):
+        print("[WARN] FLASK_SECRET usa valor por defecto — no usar en producción")
     _ensure_profile_columns()
+    _ensure_qr_status_column()
 
 
 # ------------------------------------------------
@@ -243,14 +270,91 @@ def check_csrf():
 
 
 # ------------------------------------------------
-# Email helper
+# Email helpers
 # ------------------------------------------------
-def _send_reset_email(to_email: str, reset_url: str) -> bool:
+
+def _build_reset_email(reset_url: str) -> tuple:
     """
-    Envía el email de reset. Requiere MAIL_SERVER, MAIL_USERNAME, MAIL_PASSWORD.
-    Devuelve True si se envió, False si no hay config de email.
+    Función pura. Retorna (text_body, html_body) para el email de reset de contraseña.
+    Contiene la marca VidaQR, el reset_url completo, advertencia de 1 hora
+    y aclaración de que puede ignorarse si no se solicitó.
+    Sin efectos secundarios.
+    """
+    text_body = (
+        "VidaQR — Recuperar contraseña\n\n"
+        "Hola,\n\n"
+        "Recibimos una solicitud para restablecer tu contraseña en VidaQR.\n"
+        "Hacé clic en el siguiente enlace (válido por 1 hora):\n\n"
+        f"{reset_url}\n\n"
+        "⚠️  Este enlace expira en 1 hora.\n\n"
+        "Si no solicitaste restablecer tu contraseña, podés ignorar este mensaje "
+        "sin ningún problema.\n\n"
+        "— El equipo de VidaQR"
+    )
+    html_body = (
+        "<p><strong>VidaQR</strong> — Recuperar contraseña</p>"
+        "<p>Hola,</p>"
+        "<p>Recibimos una solicitud para restablecer tu contraseña en <strong>VidaQR</strong>.</p>"
+        f'<p><a href="{reset_url}" style="background:#2563eb;color:#fff;padding:10px 18px;'
+        'border-radius:8px;text-decoration:none;display:inline-block;">'
+        "Restablecer contraseña</a></p>"
+        f'<p>O copiá este enlace en tu navegador:<br><code>{reset_url}</code></p>'
+        '<p style="color:#b45309;font-size:13px;">⚠️ Este enlace expira en 1 hora.</p>'
+        '<p style="color:#888;font-size:13px;">'
+        "Si no solicitaste restablecer tu contraseña, podés ignorar este mensaje "
+        "sin ningún problema.</p>"
+        "<p>— El equipo de VidaQR</p>"
+    )
+    return text_body, html_body
+
+
+def _build_welcome_email(nombre, base_url: str) -> tuple:
+    """
+    Función pura. Retorna (text_body, html_body) para el email de bienvenida.
+    Contiene la marca VidaQR, saludo personalizado (o genérico si nombre es None/vacío),
+    enlace a {base_url}/panel y mención a etiquetas físicas.
+    Sin efectos secundarios.
+    """
+    saludo = f"Hola, {nombre}!" if nombre else "¡Hola!"
+    panel_url = f"{base_url}/panel"
+
+    text_body = (
+        f"VidaQR — ¡Bienvenido/a!\n\n"
+        f"{saludo}\n\n"
+        "Tu cuenta en VidaQR fue creada exitosamente.\n\n"
+        "VidaQR te permite compartir tu información médica de emergencia "
+        "de forma rápida y segura mediante una etiqueta QR.\n\n"
+        f"Accedé a tu panel para completar tu ficha médica:\n{panel_url}\n\n"
+        "Pronto podrás adquirir tu etiqueta física para pegarla en tu casco, "
+        "mochila o donde más lo necesites.\n\n"
+        "— El equipo de VidaQR"
+    )
+    html_body = (
+        "<p><strong>VidaQR</strong> — ¡Bienvenido/a!</p>"
+        f"<p>{saludo}</p>"
+        "<p>Tu cuenta en <strong>VidaQR</strong> fue creada exitosamente.</p>"
+        "<p>VidaQR te permite compartir tu información médica de emergencia "
+        "de forma rápida y segura mediante una etiqueta QR.</p>"
+        f'<p><a href="{panel_url}" style="background:#2563eb;color:#fff;padding:10px 18px;'
+        'border-radius:8px;text-decoration:none;display:inline-block;">'
+        "Ir a mi panel</a></p>"
+        "<p>Pronto podrás adquirir tu etiqueta física para pegarla en tu casco, "
+        "mochila o donde más lo necesites.</p>"
+        "<p>— El equipo de VidaQR</p>"
+    )
+    return text_body, html_body
+
+
+def _send_email(to_email: str, subject: str, text_body: str, html_body: str) -> bool:
+    """
+    Envía un email vía SMTP relay (Brevo).
+    Usa las variables globales MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM.
+    Si MAIL_SERVER o MAIL_USERNAME están vacíos, imprime el contenido en los logs (modo dev)
+    y retorna False.
+    Retorna True si se envió correctamente, False si hubo error.
     """
     if not MAIL_SERVER or not MAIL_USERNAME:
+        print(f"[DEV] Email para {to_email}: {subject}\n{text_body}")
         return False
     try:
         import smtplib
@@ -258,26 +362,10 @@ def _send_reset_email(to_email: str, reset_url: str) -> bool:
         from email.mime.multipart import MIMEMultipart
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Recuperar contraseña — QR Emergencia"
+        msg["Subject"] = subject
         msg["From"]    = MAIL_FROM
         msg["To"]      = to_email
 
-        text_body = f"""Hola,
-
-Recibimos una solicitud para restablecer tu contraseña.
-Hacé clic en el siguiente enlace (válido por 1 hora):
-
-{reset_url}
-
-Si no solicitaste esto, ignorá este mensaje.
-"""
-        html_body = f"""<p>Hola,</p>
-<p>Recibimos una solicitud para restablecer tu contraseña.</p>
-<p><a href="{reset_url}" style="background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;display:inline-block;">
-  Restablecer contraseña
-</a></p>
-<p style="color:#888;font-size:13px;">El enlace es válido por 1 hora. Si no solicitaste esto, ignorá este mensaje.</p>
-"""
         msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
@@ -288,7 +376,7 @@ Si no solicitaste esto, ignorá este mensaje.
             smtp.sendmail(MAIL_FROM, to_email, msg.as_string())
         return True
     except Exception as e:
-        print(f"[ERROR] send_reset_email: {e}")
+        print(f"[ERROR] _send_email: {e}")
         return False
 
 
@@ -316,7 +404,9 @@ def db_ping():
 
 @app.route("/")
 def home():
-    return redirect(url_for("login"))
+    if get_current_user():
+        return redirect(url_for("panel"))
+    return render_template("index.html")
 
 
 # ------------------------------------------------
@@ -432,6 +522,13 @@ def register():
                 session.permanent = True
                 session["uid"] = uid
 
+                # Enviar email de bienvenida (no bloquea el flujo si falla)
+                try:
+                    text_body, html_body = _build_welcome_email(nombre or None, APP_BASE_URL)
+                    _send_email(email, "¡Bienvenido/a a VidaQR!", text_body, html_body)
+                except Exception as e:
+                    print(f"[ERROR] send_welcome_email: {e}")
+
                 # Si viene de un claim, completar el claim y luego ir al perfil
                 if nxt.startswith("/claim/"):
                     return redirect(nxt)
@@ -468,10 +565,13 @@ def forgot():
                     (token, expires, user["id"])
                 )
                 reset_url = f"{APP_BASE_URL}/reset/{token}"
-                sent_ok   = _send_reset_email(email, reset_url)
-                if not sent_ok:
-                    # Sin config de email: mostrar el link en consola (útil en dev)
-                    print(f"[DEV] Reset URL para {email}: {reset_url}")
+                text_body, html_body = _build_reset_email(reset_url)
+                _send_email(
+                    email,
+                    "Recuperar contraseña — VidaQR",
+                    text_body,
+                    html_body,
+                )
 
             cur.close(); conn.close()
         sent = True  # Siempre mostrar "te enviamos instrucciones" (no revelar si existe)
@@ -725,7 +825,8 @@ def claim_code(code):
         return redirect(url_for("emergencia", qr_id=qr_id))
 
     cur.execute(
-        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW() WHERE public_code=%s AND user_id IS NULL",
+        "UPDATE qr_codes SET user_id=%s, claimed_at=NOW(), status='active' "
+        "WHERE public_code=%s AND user_id IS NULL",
         (user["id"], code)
     )
     cur.close(); conn.close()

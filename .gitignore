@@ -6,3 +6,6 @@ __pycache__/
 # Archivos generados localmente
 labels/*.png
 *.pdf
+
+# Hypothesis (datos internos de testing)
+.hypothesis/
